@@ -1,0 +1,171 @@
+# ==========================================
+# Byte-compiled / Python / Cache
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==========================================
+# Virtual Environments & Package Managers
+# ==========================================
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+.uv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ==========================================
+# Jupyter Notebooks & Interactivity
+# ==========================================
+.ipynb_checkpoints
+*-checkpoint.ipynb
+.virtual_documents/
+.hydra/
+
+# ==========================================
+# Datasets, Data Formats & Large Files
+# ==========================================
+# Data Directories (uncomment or adjust based on folder layout)
+# data/raw/
+# data/processed/
+# data/external/
+
+# Binary & Compressed Data Formats
+#*.csv
+*.tsv
+*.parquet
+*.feather
+*.hdf5
+*.h5
+*.hd5
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.feather
+*.arrow
+*.db
+*.sqlite
+*.sqlite3
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.7z
+*.rar
+
+# Image / Audio / Video datasets
+*.jpg
+*.jpeg
+#*.png
+*.bmp
+*.tiff
+*.webp
+*.mp4
+*.avi
+*.mov
+*.wav
+*.mp3
+*.flac
+
+# ==========================================
+# ML Models, Weights, & Checkpoints
+# ==========================================
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+*.ckpt
+*.model
+*.pb
+*.tflite
+*.h5
+*.keras
+*.joblib
+*.nnet
+*.weights
+#models/
+checkpoints/
+runs/
+out/
+outputs/
+
+# ==========================================
+# Experiment Tracking & Logs
+# ==========================================
+# TensorBoard
+logs/
+*.tfevents*
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# General logs
+*.log
+
+# ==========================================
+# Environment Variables & Credentials
+# ==========================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# ==========================================
+# IDEs & Code Editors
+# ==========================================
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# PyCharm / JetBrains
+.idea/
+
+# Mac / Windows system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Extra
+generator.py
+tree.py
+context.txt
