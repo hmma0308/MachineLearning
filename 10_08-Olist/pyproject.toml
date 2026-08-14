@@ -9,32 +9,35 @@ description = "Brazilian e-commerce public dataset"
 authors = [
   { name = "HugoMamona" },
 ]
-
 readme = "README.md"
+requires-python = "==3.12.13"
 classifiers = [
     "Programming Language :: Python :: 3",
-    
 ]
+
 dependencies = [
-    "ipython",
+    "fg-data-profiling>=4.19.1",
+    "ipykernel>=7.3.0",
+    "ipywidgets>=8.1.8",
     "jupyterlab",
     "loguru",
     "matplotlib",
-    "mkdocs",
-    "notebook",
     "numpy",
     "pandas",
-    "pip",
-    "pytest",
     "python-dotenv",
-    "ruff",
     "scikit-learn",
     "seaborn>=0.13.2",
+    "setuptools<70",
     "tqdm",
     "typer",
 ]
-requires-python = "~=3.14.0"
 
+[dependency-groups]
+dev = [
+    "mkdocs>=1.6.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.2",
+]
 
 [tool.ruff]
 line-length = 99
@@ -47,4 +50,3 @@ extend-select = ["I"]  # Add import sorting
 [tool.ruff.lint.isort]
 known-first-party = ["module_Olist"]
 force-sort-within-sections = true
-
