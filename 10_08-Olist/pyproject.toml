@@ -24,6 +24,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas",
+    "pandera[pandas]>=0.32.1",
     "python-dotenv",
     "scikit-learn",
     "seaborn>=0.13.2",
