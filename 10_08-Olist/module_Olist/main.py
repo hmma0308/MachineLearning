@@ -5,6 +5,9 @@ from loguru import logger
 from dataset import load_data, save_data
 from features import create_dataset, create_features
 
+# Import adicionado para o novo módulo
+from cross_validation import run_cross_validation
+
 def main():
     # Define os caminhos de entrada e saída relativos à raiz do projeto
     raw_dir = Path("data/raw")
@@ -41,6 +44,23 @@ def main():
     save_data(dataset=dataset_with_features, output_dir=interim_dir)
 
     logger.success("Pipeline finalizado. Dados salvos em data/interim")
+
+    # 6. Executa a validação cruzada no dataset com features
+    logger.info("Iniciando a etapa de avaliação de modelo (Cross-Validation)...")
+    run_cross_validation(dataset_with_features)
+
+
+#    data = create_dataset(orders, items, customers)
+#    data = create_features(data)
+
+#    # Salva o resultado
+#    save_dataset(data, INTERIM_DATA_DIR / "orders_dataset_refined.csv")
+
+#    X_train, X_test, y_train, y_test = split_data(data)
+
+#    models = train_models(X_train, y_train)
+
+#    evaluate_models(models, X_test, y_test)
 
 if __name__ == "__main__":
     main()
