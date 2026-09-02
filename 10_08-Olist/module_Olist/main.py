@@ -1,3 +1,4 @@
+# module_Olist/main.py
 import pandas as pd
 from pathlib import Path
 from loguru import logger
@@ -5,8 +6,8 @@ from loguru import logger
 from dataset import load_data, save_data
 from features import create_dataset, create_features
 
-# Import adicionado para o novo módulo
-from cross_validation import run_cross_validation
+# Import substituído para puxar a rotina de treino e salvamento do melhor modelo
+from modeling.train import train_and_save_best_model
 
 def main():
     # Define os caminhos de entrada e saída relativos à raiz do projeto
@@ -40,27 +41,14 @@ def main():
     logger.info("Criando as features derivadas...")
     dataset_with_features = create_features(dataset)
 
-    # 5. Salva o resultado final
+    # 5. Salva o resultado final no interim
     save_data(dataset=dataset_with_features, output_dir=interim_dir)
 
     logger.success("Pipeline finalizado. Dados salvos em data/interim")
 
-    # 6. Executa a validação cruzada no dataset com features
-    logger.info("Iniciando a etapa de avaliação de modelo (Cross-Validation)...")
-    run_cross_validation(dataset_with_features)
-
-
-#    data = create_dataset(orders, items, customers)
-#    data = create_features(data)
-
-#    # Salva o resultado
-#    save_dataset(data, INTERIM_DATA_DIR / "orders_dataset_refined.csv")
-
-#    X_train, X_test, y_train, y_test = split_data(data)
-
-#    models = train_models(X_train, y_train)
-
-#    evaluate_models(models, X_test, y_test)
+    # 6. Avalia todos os modelos, treina o melhor e salva na pasta models/
+    logger.info("Iniciando a etapa de modelagem...")
+    train_and_save_best_model(dataset_with_features)
 
 if __name__ == "__main__":
     main()
