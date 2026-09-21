@@ -2,8 +2,8 @@
 # GLOBALS                                                                       #
 #################################################################################
 
-PROJECT_NAME = Olist
-PYTHON_VERSION = 3.14
+PROJECT_NAME = deep_learning
+PYTHON_VERSION = 3.12
 PYTHON_INTERPRETER = python
 
 #################################################################################
@@ -65,7 +65,7 @@ create_environment:
 ## Make dataset
 .PHONY: data
 data: requirements
-	$(PYTHON_INTERPRETER) module_Olist/dataset.py
+	$(PYTHON_INTERPRETER) module_deep_learning/dataset.py
 
 
 #################################################################################
