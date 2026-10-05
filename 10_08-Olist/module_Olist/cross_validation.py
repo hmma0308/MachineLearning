@@ -1,9 +1,12 @@
+import numpy as np
+import pandas as pd
+from loguru import logger
+
 from sklearn.model_selection import (
     StratifiedKFold,
     cross_validate,
     cross_val_predict,
 )
-
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -11,16 +14,42 @@ from sklearn.metrics import (
     f1_score,
 )
 
-import numpy as np
-import pandas as pd
-
-from loguru import logger
-
 from module_Olist.modeling.pipeline import (
     create_gradient_boosting_pipeline,
     create_xgboost_pipeline,
     create_lightgbm_pipeline,
 )
+
+
+def prepare_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Remove colunas que não podem ser usadas no treinamento (IDs, datas e data leakage)
+    e separa a variável-alvo (y) das variáveis preditivas (X).
+    """
+    logger.info(
+        "Preparando dados: removendo IDs e colunas que causam vazamento de dados...")
+
+    # Colunas que causam data leakage ou não são interpretáveis matematicamente
+    columns_to_drop = [
+        "order_id",
+        "customer_id",
+        "order_status",
+        "order_purchase_timestamp",
+        "order_approved_at",
+        "order_delivered_carrier_date",
+        "order_delivered_customer_date",
+        "order_estimated_delivery_date",
+        "is_late"  # A própria variável-alvo
+    ]
+
+    # Removendo customer_city devido à altíssima cardinalidade para um modelo inicial.
+    if "customer_city" in df.columns:
+        columns_to_drop.append("customer_city")
+
+    X = df.drop(columns=[col for col in columns_to_drop if col in df.columns])
+    y = df["is_late"]
+
+    return X, y
 
 
 def summarize_cv(results):
@@ -31,7 +60,6 @@ def summarize_cv(results):
     - média dos folds;
     - desvio padrão dos folds.
     """
-
     metrics = [
         "accuracy",
         "precision",
@@ -44,7 +72,6 @@ def summarize_cv(results):
     summary = []
 
     for metric in metrics:
-
         values = results[f"test_{metric}"]
 
         summary.append(
@@ -64,7 +91,6 @@ def find_best_threshold(y_true, y_proba):
 
     O threshold é testado entre 0.01 e 0.99.
     """
-
     best_threshold = None
 
     best_f1 = -1
@@ -74,7 +100,6 @@ def find_best_threshold(y_true, y_proba):
 
     # Testa diferentes thresholds
     for threshold in np.arange(0.01, 1.00, 0.01,):
-
         # Converte probabilidades em classes
         y_pred = (y_proba >= threshold).astype(int)
 
@@ -86,7 +111,6 @@ def find_best_threshold(y_true, y_proba):
 
         # Verifica se encontrou um F1 melhor
         if f1 > best_f1:
-
             best_threshold = threshold
             best_accuracy = accuracy
             best_precision = precision
@@ -120,11 +144,9 @@ def cross_validate_models(
     - nome do melhor modelo;
     - melhor threshold.
     """
-
     # -------------------------------------------------
     # Pipelines
     # -------------------------------------------------
-
     pipelines = {
         "Gradient Boosting": create_gradient_boosting_pipeline(),
         "XGBoost": create_xgboost_pipeline(),
@@ -134,7 +156,6 @@ def cross_validate_models(
     # -------------------------------------------------
     # Estratégia de Cross Validation
     # -------------------------------------------------
-
     kf = StratifiedKFold(
         n_splits=5,
         shuffle=True,
@@ -144,7 +165,6 @@ def cross_validate_models(
     # -------------------------------------------------
     # Métricas
     # -------------------------------------------------
-
     scoring = {
         "accuracy": "accuracy",
         "precision": "precision",
@@ -160,7 +180,6 @@ def cross_validate_models(
     # -------------------------------------------------
     # Cross Validation
     # -------------------------------------------------
-
     for name, pipeline in pipelines.items():
 
         logger.info(
@@ -170,7 +189,6 @@ def cross_validate_models(
         # ---------------------------------------------
         # Métricas dos folds
         # ---------------------------------------------
-
         results = cross_validate(
             estimator=pipeline,
             X=X_train,
@@ -197,7 +215,6 @@ def cross_validate_models(
         # ---------------------------------------------
         # Probabilidades Out-of-Fold
         # ---------------------------------------------
-
         logger.info(f"Calculando probabilidades Out-of-Fold: {name}")
 
         y_proba_oof = cross_val_predict(
@@ -211,7 +228,6 @@ def cross_validate_models(
         # ---------------------------------------------
         # Melhor threshold
         # ---------------------------------------------
-
         threshold_results = (
             find_best_threshold(
                 y_true=y_train,
@@ -222,7 +238,6 @@ def cross_validate_models(
         # ---------------------------------------------
         # Guarda os resultados do modelo
         # ---------------------------------------------
-
         cv_results[name] = {
             "results": results,
             "summary": summary,
@@ -261,23 +276,16 @@ def cross_validate_models(
         # ---------------------------------------------
         # Resultado com threshold otimizado
         # ---------------------------------------------
-
         logger.success(f"THRESHOLD OTIMIZADO - {name}")
-
         logger.info(f"Threshold: {threshold_results['threshold']:.2f}")
-
         logger.info(f"Accuracy: {threshold_results['accuracy']:.3f}")
-
         logger.info(f"Precision: {threshold_results['precision']:.3f}")
-
         logger.info(f"Recall: {threshold_results['recall']:.3f}")
-
         logger.info(f"F1 OOF: {threshold_results['f1']:.3f}")
 
     # -------------------------------------------------
     # Escolha do melhor modelo
     # -------------------------------------------------
-
     best_model_name = max(
         cv_results,
         key=lambda name: (
@@ -293,23 +301,18 @@ def cross_validate_models(
     best_threshold = best_results[
         "threshold"
     ]
-
     best_accuracy = best_results[
         "accuracy"
     ]
-
     best_precision = best_results[
         "precision"
     ]
-
     best_recall = best_results[
         "recall"
     ]
-
     best_f1 = best_results[
         "f1_oof"
     ]
-
     best_pr_auc = best_results[
         "pr_auc"
     ]
@@ -317,36 +320,25 @@ def cross_validate_models(
     # -------------------------------------------------
     # Resultado final da seleção
     # -------------------------------------------------
-
     logger.success(
         f"Melhor modelo: "
         f"{best_model_name}"
     )
 
     logger.info(f"F1 OOF otimizado: {best_f1:.3f}")
-
     logger.success("MODELO SELECIONADO")
-
     logger.info(f"Modelo: {best_model_name}")
-
     logger.info(f"Threshold: {best_threshold:.2f}")
-
     logger.info(f"Accuracy OOF: {best_accuracy:.3f}")
-
     logger.info(f"Precision OOF: {best_precision:.3f}")
-
     logger.info(f"Recall OOF: {best_recall:.3f}")
-
     logger.info(f"F1 OOF: {best_f1:.3f}")
-
     logger.info(f"PR-AUC médio CV: {best_pr_auc:.3f}")
-
     logger.success("Cross Validation concluído.")
 
     # -------------------------------------------------
     # Retorno
     # -------------------------------------------------
-
     return (
         best_model_name,
         best_threshold,

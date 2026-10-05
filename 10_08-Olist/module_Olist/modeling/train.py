@@ -5,7 +5,7 @@ from loguru import logger
 
 from module_Olist.config import MODELS_DIR
 from module_Olist.cross_validation import prepare_data
-from module_Olist.cross_validation_2 import cross_validate_models
+from module_Olist.cross_validation import cross_validate_models
 
 # Importa os pipelines da sua pasta modeling
 from module_Olist.modeling.pipeline import (
