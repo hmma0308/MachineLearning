@@ -1,0 +1,8 @@
+{
+    "model_name": "Facenet512",
+    "detector_backend": "yunet",
+    "distance_metric": "cosine",
+    "threshold": 0.3,
+    "n_people": 2,
+    "n_images": 8
+}

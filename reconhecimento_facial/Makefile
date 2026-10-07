@@ -2,8 +2,8 @@
 # GLOBALS                                                                       #
 #################################################################################
 
-PROJECT_NAME = Olist
-PYTHON_VERSION = 3.14
+PROJECT_NAME = reconhecimento_facial
+PYTHON_VERSION = 3.12
 PYTHON_INTERPRETER = python
 
 #################################################################################
@@ -62,10 +62,16 @@ create_environment:
 #################################################################################
 
 
-## Make dataset
-.PHONY: data
-data: requirements
-	$(PYTHON_INTERPRETER) module_Olist/dataset.py
+## Build the database of authorized faces from data/raw/authorized
+.PHONY: train
+train:
+	$(PYTHON_INTERPRETER) -m module_reconhecimento.main
+
+
+## Run the access control with the notebook webcam
+.PHONY: inference
+inference:
+	$(PYTHON_INTERPRETER) -m module_reconhecimento.inference
 
 
 #################################################################################
