@@ -20,6 +20,7 @@ dependencies = [
     "ipykernel>=7.3.0",
     "ipywidgets>=8.1.8",
     "jupyterlab",
+    "lightgbm>=4.7.0",
     "loguru",
     "matplotlib",
     "numpy",
@@ -32,6 +33,7 @@ dependencies = [
     "shap>=0.52.0",
     "tqdm",
     "typer",
+    "xgboost>=3.4.1",
 ]
 
 [dependency-groups]

@@ -1,18 +1,20 @@
-# module_Olist/modeling/train.py
 import joblib
+import json
+import pickle
 import pandas as pd
 from loguru import logger
 
-from module_Olist.config import MODELS_DIR
-from module_Olist.cross_validation import prepare_data
-from module_Olist.cross_validation import cross_validate_models
+from module_olist.config import MODELS_DIR
+# Import corrigido para refletir a nova localização do cross_validation.py dentro de modeling
+from module_olist.modeling.cross_validation import prepare_data, cross_validate_models
 
 # Importa os pipelines da sua pasta modeling
-from module_Olist.modeling.pipeline import (
+from module_olist.modeling.pipeline import (
     create_gradient_boosting_pipeline,
     create_xgboost_pipeline,
     create_lightgbm_pipeline,
 )
+
 
 def get_pipeline_by_name(name: str):
     """Retorna a instância do pipeline com base no nome do modelo."""
@@ -23,6 +25,7 @@ def get_pipeline_by_name(name: str):
     }
     return pipelines[name]
 
+
 def train_and_save_best_model(df: pd.DataFrame) -> None:
     """
     Prepara os dados, executa a validação cruzada para encontrar o melhor
@@ -32,10 +35,10 @@ def train_and_save_best_model(df: pd.DataFrame) -> None:
     X, y = prepare_data(df)
 
     logger.info("Iniciando a busca pelo melhor modelo (Cross-Validation)...")
-    # Usa a função do cross_validation_2.py para encontrar o vencedor
     best_model_name, best_threshold = cross_validate_models(X, y)
-    
-    logger.info(f"Treinando o modelo vencedor ({best_model_name}) em todos os dados (Full Train)...")
+
+    logger.info(
+        f"Treinando o modelo vencedor ({best_model_name}) em todos os dados (Full Train)...")
     best_pipeline = get_pipeline_by_name(best_model_name)
     best_pipeline.fit(X, y)
 
@@ -50,8 +53,24 @@ def train_and_save_best_model(df: pd.DataFrame) -> None:
     # Garante que a pasta models existe e salva o arquivo
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     model_path = MODELS_DIR / "best_model.joblib"
-    
-    logger.info(f"Salvando o artefato do modelo em {model_path}...")
+
+    logger.info(
+        f"Salvando o artefato do modelo consolidado em {model_path}...")
     joblib.dump(model_artifact, model_path)
-    
-    logger.success("Treinamento finalizado e modelo salvo com sucesso!")
+
+    logger.info(
+        "Exportando arquivos individuais (model.pkl, threshold.json, metadata.json)...")
+
+    with open(MODELS_DIR / "model.pkl", "wb") as f:
+        pickle.dump(best_pipeline, f)
+
+    with open(MODELS_DIR / "threshold.json", "w") as f:
+        json.dump({"threshold": best_threshold}, f, indent=4)
+
+    with open(MODELS_DIR / "metadata.json", "w") as f:
+        json.dump({
+            "model_name": best_model_name,
+            "features": list(X.columns)
+        }, f, indent=4)
+
+    logger.success("Treinamento finalizado e modelos salvos com sucesso!")

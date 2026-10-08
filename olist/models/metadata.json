@@ -1,0 +1,14 @@
+{
+    "model_name": "XGBoost",
+    "features": [
+        "item_count",
+        "seller_count",
+        "total_price",
+        "total_freight",
+        "customer_state",
+        "promised_days",
+        "purchase_month",
+        "purchase_weekday",
+        "purchase_hour"
+    ]
+}

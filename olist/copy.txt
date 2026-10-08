@@ -1,0 +1,1468 @@
+# module_olist/__init__.py
+from module_Olist import config  # noqa: F401
+
+# module_olist/config.py
+from pathlib import Path
+
+from dotenv import load_dotenv
+from loguru import logger
+
+# Load environment variables from .env file if it exists
+load_dotenv()
+
+# Paths
+PROJ_ROOT = Path(__file__).resolve().parents[1]
+logger.info(f"PROJ_ROOT path is: {PROJ_ROOT}")
+
+DATA_DIR = PROJ_ROOT / "data"
+RAW_DATA_DIR = DATA_DIR / "raw"
+INTERIM_DATA_DIR = DATA_DIR / "interim"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+EXTERNAL_DATA_DIR = DATA_DIR / "external"
+
+MODELS_DIR = PROJ_ROOT / "models"
+
+REPORTS_DIR = PROJ_ROOT / "reports"
+FIGURES_DIR = REPORTS_DIR / "figures"
+
+# If tqdm is installed, configure loguru with tqdm.write
+# https://github.com/Delgan/loguru/issues/135
+try:
+    from tqdm import tqdm
+
+    logger.remove(0)
+    logger.add(lambda msg: tqdm.write(msg, end=""), colorize=True)
+except ModuleNotFoundError:
+    pass
+
+# module_olist/dataset.py
+import pandas as pd 
+from pathlib import Path
+from loguru import logger
+
+def load_data(order_path: Path, items_path: Path, products_path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Load and merge the orders, order items, and products datasets.
+
+    Args:
+        order_path (Path): Path to the orders dataset.
+        items_path (Path): Path to the order items dataset.
+        products_path (Path): Path to the products dataset.
+
+    Returns:
+        tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Individual DataFrames for orders, order items, and products.
+    """
+    logger.info("Loading datasets...")
+    
+    # Load datasets
+    orders = pd.read_csv(order_path, parse_dates=['order_purchase_timestamp', 'order_approved_at', 'order_delivered_carrier_date', 'order_delivered_customer_date', 'order_estimated_delivery_date'])
+    items = pd.read_csv(items_path)
+    products = pd.read_csv(products_path)
+
+    logger.info("Merging datasets...")
+    
+    # Merge datasets
+    merged_df = orders.merge(items, on='order_id', how='left')
+    merged_df = merged_df.merge(products, on='product_id', how='left')
+
+    logger.info("Datasets loaded and merged successfully.")
+    
+    return orders, items, products
+
+
+def save_data(dataset: pd.DataFrame, output_dir: Path) -> None:
+    """
+    Save the individual DataFrames to CSV files.
+
+    Args:
+        dataset (pd.DataFrame): DataFrame to be saved.
+        output_dir (Path): Directory where the CSV files will be saved.
+    """
+    logger.info("Saving datasets to CSV files...")
+
+    # Ensure the output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save datasets to CSV
+    dataset.to_csv(output_dir / 'dataset.csv', index=False)
+
+    logger.success("Datasets saved successfully.")
+
+
+def create_target(orders: pd.DataFrame) -> pd.DataFrame:
+    # Seleciona apenas os pedidos que podem ser utilizados para construir
+    # o histórico de entregas atrasadas e realizadas dentro do prazo.
+    delivered_orders = orders.loc[
+        # Mantém somente pedidos que foram efetivamente entregues.
+        orders["order_status"].eq("delivered")
+
+        # Remove pedidos sem a data real em que o cliente recebeu a compra.
+        # Essa data é necessária para saber se o pedido atrasou.
+        & orders["order_delivered_customer_date"].notna()
+
+        # Remove pedidos sem a data de entrega prometida ao cliente.
+        # Sem essa informação, não é possível comparar o previsto com o realizado.
+        & orders["order_estimated_delivery_date"].notna()
+
+        # Mantém somente pedidos com a data de aprovação do pagamento.
+        # Esse é o momento definido para realizar a previsão.
+        & orders["order_approved_at"].notna()
+    ].copy()  # Cria uma cópia independente para evitar alterações no DataFrame original.
+
+    # Cria a variável-alvo do problema:
+    # 1 → pedido entregue depois da data prometida;
+    # 0 → pedido entregue dentro do prazo ou antes da data prometida.
+    delivered_orders["is_late"] = (
+        delivered_orders["order_delivered_customer_date"] > delivered_orders["order_estimated_delivery_date"]
+    ).astype("int8")  # Armazena 0 e 1 usando um tipo inteiro que ocupa menos memória.
+
+    # Apresenta a quantidade total de pedidos antes da aplicação dos filtros.
+    logger.info(f"Pedidos originais: {len(orders):,}")
+
+    # Apresenta quantos pedidos permaneceram após aplicação do filtro
+    logger.info(f"Pedidos filtrados: {len(delivered_orders):,}")
+
+    # Mostra a quantidade de pedidos em cada classe:
+    # 0 = entregue no prazo;
+    # 1 = entregue com atraso.
+    logger.info(
+        delivered_orders["is_late"].value_counts(dropna=False)
+    )
+
+    return delivered_orders
+
+
+def aggregate_data(items: pd.DataFrame) -> pd.DataFrame:
+    # A tabela de itens possui uma linha para cada item presente no pedido.
+    # Portanto, um mesmo order_id pode aparecer várias vezes.
+    #
+    # Como o objetivo é construir uma base com uma linha por pedido,
+    # precisamos agrupar os itens antes de integrar essa tabela às demais.
+    items_agg = (
+        items.groupby(
+            "order_id",       # Agrupa todos os itens pertencentes ao mesmo pedido.
+            as_index=False,   # Mantém order_id como uma coluna comum.
+        )
+        .agg(
+            # Conta quantas linhas de itens existem em cada pedido.
+            # Um pedido com três produtos registrados terá item_count igual a 3.
+            # nome_da_nova_coluna=("coluna_original", "função")
+            item_count=("order_item_id", "count"),
+
+            # Conta quantos vendedores diferentes participam do pedido.
+            # O nunique evita contar o mesmo vendedor mais de uma vez.
+            # nome_da_nova_coluna=("coluna_original", "função")
+            seller_count=("seller_id", "nunique"),
+
+            # Soma os preços dos itens para obter o valor total dos produtos
+            # presentes no pedido.
+            # nome_da_nova_coluna=("coluna_original", "função")
+            total_price=("price", "sum"),
+
+            # Soma o frete de todos os itens para obter o valor total de frete
+            # associado ao pedido.
+            total_freight=("freight_value", "sum"),
+        )
+    )
+
+    # Verifica se cada pedido aparece somente uma vez após a agregação.
+    #
+    # Se a condição for falsa, o Python interromperá a execução e lançará
+    # um AssertionError. Essa checagem ajuda a garantir que a unidade de
+    # análise da nova tabela é realmente o pedido.
+    assert items_agg["order_id"].is_unique
+
+    # Exibe as cinco primeiras linhas da tabela agregada.
+    return items_agg
+
+# module_olist/explain.py
+import pandas as pd
+import shap
+import matplotlib.pyplot as plt
+from loguru import logger
+
+from module_Olist.config import (
+    FIGURES_DIR,
+    INTERIM_DATA_DIR,
+    MODELS_DIR,
+)
+
+from module_Olist.modeling.predict import (
+    load_model,
+)
+
+from module_Olist.modeling.interpret import (
+    prepare_data_for_shap,
+    create_explainer,
+    calculate_shap_values,
+)
+
+
+def main():
+    logger.info("Iniciando explicabilidade do modelo...")
+
+    # Carrega o dataset com o nome correto
+    data = pd.read_csv(INTERIM_DATA_DIR / "dataset.csv")
+
+    # Separa target
+    y = data["is_late"]
+
+    # Remove target das entradas
+    X = data.drop(columns=["is_late"])
+
+    # Seleciona algumas amostras
+    X_sample = X.sample(n=100, random_state=42)
+
+    # Carrega o modelo treinado (apenas com o caminho do joblib)
+    model, model_name, threshold = load_model(
+        model_path=MODELS_DIR / "best_model.joblib"
+    )
+
+    logger.info(f"Modelo: {model_name}")
+
+    # Aplica o pré-processamento
+    X_transformed = prepare_data_for_shap(
+        pipeline=model,
+        X=X_sample,
+    )
+
+    # Cria o explicador
+    explainer = create_explainer(
+        pipeline=model
+    )
+
+    # Calcula SHAP
+    shap_values = calculate_shap_values(
+        explainer=explainer,
+        X_transformed=X_transformed,
+    )
+
+    logger.success("Valores SHAP calculados.")
+
+    # Gera os gráficos
+    shap.plots.bar(
+        shap_values,
+        max_display=10,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(
+        FIGURES_DIR / "shap_global_bar.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.close()
+
+    shap.plots.beeswarm(
+        shap_values,
+        max_display=10,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(
+        FIGURES_DIR / "shap_beeswarm.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.close()
+
+    sample_position = 0
+
+    shap.plots.waterfall(
+        shap_values[sample_position],
+        max_display=10,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(
+        FIGURES_DIR / "shap_waterfall.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.close()
+
+    logger.success("Gráficos SHAP gerados com sucesso.")
+    logger.info(f"Gráficos salvos em: {FIGURES_DIR}")
+
+
+if __name__ == "__main__":
+    main()
+
+# module_olist/features.py
+import pandas as pd
+from loguru import logger
+
+from module_Olist.dataset import aggregate_data, create_target
+
+
+def create_features(data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create features derived from the orders dataset.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing order timestamps.
+
+    Returns:
+        pd.DataFrame: DataFrame with the new feature columns added.
+    """
+    data = data.copy()
+
+    # Calcula quantos dias a empresa prometeu para realizar a entrega,
+    # considerando como início o momento da aprovação do pagamento.
+    data["promised_days"] = (
+        data["order_estimated_delivery_date"]  # Data prometida para a entrega.
+        - data["order_approved_at"]            # Data de aprovação do pagamento.
+    ).dt.total_seconds().div(86_400)          # Converte segundos para dias => 24 * 60 * 60 = 86.400 segundos
+
+    # Extrai o número do mês em que a compra foi realizada.
+    # Exemplo: janeiro = 1, fevereiro = 2, ..., dezembro = 12.
+    data["purchase_month"] = (
+        data["order_purchase_timestamp"].dt.month
+    )
+
+    # Extrai o dia da semana em que a compra foi realizada.
+    #
+    # O Pandas representa os dias da seguinte forma:
+    # 0 = segunda-feira
+    # 1 = terça-feira
+    # 2 = quarta-feira
+    # 3 = quinta-feira
+    # 4 = sexta-feira
+    # 5 = sábado
+    # 6 = domingo
+    data["purchase_weekday"] = (
+        data["order_purchase_timestamp"].dt.dayofweek
+    )
+
+    # Extrai a hora em que a compra foi realizada.
+    # Os valores variam de 0 a 23.
+    #
+    # Exemplo:
+    # 0  = meia-noite
+    # 8  = 8 horas
+    # 14 = 14 horas
+    # 23 = 23 horas
+    data["purchase_hour"] = (
+        data["order_purchase_timestamp"].dt.hour
+    )
+
+    # Gera estatísticas descritivas para o prazo prometido:
+    # quantidade, média, desvio-padrão, mínimo, quartis e máximo.
+    logger.info(
+        "Estatísticas de promised_days:\n{}",
+        data["promised_days"].describe().to_frame().T
+    )
+
+    # Conta quantos pedidos apresentam prazo prometido menor ou igual a zero.
+    #
+    # Esses casos seriam suspeitos porque significariam que a data prometida
+    # ocorreu antes ou exatamente no momento da aprovação do pagamento.
+    logger.info(
+        "Prazos não positivos: {}",
+        data["promised_days"].le(0).sum()
+    )
+
+    return data
+
+
+def create_dataset(
+    orders: pd.DataFrame,
+    items: pd.DataFrame,
+    customers: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Create a dataset for predicting late deliveries.
+
+    Args:
+        orders (pd.DataFrame): DataFrame containing order information.
+        items (pd.DataFrame): DataFrame containing order items.
+        customers (pd.DataFrame): DataFrame containing customer information.
+
+    Returns:
+        pd.DataFrame: DataFrame containing only delivered orders with the target variable.
+    """
+    orders = create_target(orders)
+    items_agg = aggregate_data(items)
+
+    # Adiciona as informações agregadas dos itens: quantidade de itens,
+    # vendedores, preço total e frete total.
+    dataset = orders.merge(
+        items_agg,
+        on="order_id",          # Coluna usada para relacionar as tabelas.
+        how="left",             # Mantém todos os pedidos de orders.
+        validate="one_to_one",  # Verifica se order_id é único nas duas tabelas.
+    )
+
+    # Adiciona a localização do cliente.
+    dataset = dataset.merge(
+        customers[["customer_id", "customer_city", "customer_state"]],
+        on="customer_id",         # Relaciona cada pedido ao seu cliente.
+        how="left",               # Mantém todos os pedidos da base anterior.
+        validate="many_to_one",   # Vários pedidos podem apontar para um cliente.
+    )
+
+    assert dataset["order_id"].is_unique, "A base final deve manter uma linha por pedido."
+    assert len(dataset) == len(orders), "A integração alterou o total de pedidos."
+
+    return dataset
+
+# module_olist/inference.py
+import pandas as pd
+from loguru import logger
+
+from module_Olist.config import (
+    INTERIM_DATA_DIR,
+    MODELS_DIR,
+)
+
+from module_Olist.modeling.predict import (
+    load_model,
+    predict,
+)
+
+
+def main():
+    logger.info("Carregando dados para inferência...")
+
+    # Carrega o dataset já preparado com o nome correto
+    data = pd.read_csv(INTERIM_DATA_DIR / "dataset.csv")
+
+    # Somente as features usadas no treinamento
+    X = data[
+        [
+            "promised_days",
+            "item_count",
+            "seller_count",
+            "total_price",
+            "total_freight",
+            "purchase_month",
+            "purchase_weekday",
+            "purchase_hour",
+            "customer_state",
+        ]
+    ]
+
+    # Seleciona algumas amostras
+    X_sample = X.sample(n=5, random_state=42)
+
+    # Carrega o artefato do modelo (apenas com o caminho do joblib)
+    logger.info("Carregando o artefato do modelo...")
+    model, model_name, threshold = load_model(
+        model_path=MODELS_DIR / "best_model.joblib"
+    )
+
+    # Realiza a inferência
+    logger.info("Gerando predições...")
+    predictions = predict(
+        model=model,
+        X=X_sample,
+        threshold=threshold,
+    )
+
+    logger.info(f"Amostras selecionadas para inferência:\n{X_sample}\n")
+    logger.success(f"Predições realizadas:\n{predictions}")
+
+
+if __name__ == "__main__":
+    main()
+
+# module_olist/main.py
+# module_Olist/main.py
+import pandas as pd
+from pathlib import Path
+from loguru import logger
+
+from dataset import load_data, save_data
+from features import create_dataset, create_features
+
+# Import substituído para puxar a rotina de treino e salvamento do melhor modelo
+from modeling.train import train_and_save_best_model
+
+def main():
+    # Define os caminhos de entrada e saída relativos à raiz do projeto
+    raw_dir = Path("data/raw")
+    interim_dir = Path("data/interim")
+
+    # Mapeia os arquivos brutos 
+    orders_path = raw_dir / "olist_orders_dataset.csv"
+    items_path = raw_dir / "olist_order_items_dataset.csv"
+    products_path = raw_dir / "olist_products_dataset.csv"
+    customers_path = raw_dir / "olist_customers_dataset.csv"
+
+    logger.info("Iniciando o pipeline de processamento de dados...")
+
+    # 1. Carrega as bases
+    orders, items, products = load_data(
+        order_path=orders_path, 
+        items_path=items_path, 
+        products_path=products_path
+    )
+
+    # 2. Carrega a base de clientes
+    logger.info("Carregando o dataset de clientes...")
+    customers = pd.read_csv(customers_path)
+
+    # 3. Integra os dados e cria o alvo
+    logger.info("Construindo o dataset analítico e criando a variável-alvo...")
+    dataset = create_dataset(orders=orders, items=items, customers=customers)
+
+    # 4. Cria as novas variáveis preditivas
+    logger.info("Criando as features derivadas...")
+    dataset_with_features = create_features(dataset)
+
+    # 5. Salva o resultado final no interim
+    save_data(dataset=dataset_with_features, output_dir=interim_dir)
+
+    logger.success("Pipeline finalizado. Dados salvos em data/interim")
+
+    # 6. Avalia todos os modelos, treina o melhor e salva na pasta models/
+    logger.info("Iniciando a etapa de modelagem...")
+    train_and_save_best_model(dataset_with_features)
+
+if __name__ == "__main__":
+    main()
+
+# module_olist/modeling/__init__.py
+
+
+# module_olist/modeling/active_learning.py
+from loguru import logger
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy import stats
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.semi_supervised import LabelSpreading
+
+from module_olist.config import FIGURES_DIR, INTERIM_DATA_DIR, REPORTS_DIR
+from module_olist.modeling.pipeline import CATEGORICAL_FEATURES, NUMERIC_FEATURES
+from module_olist.modeling.split import FEATURES, TARGET, split_data
+
+RANDOM_STATE = 42
+
+DATASET_PATH = INTERIM_DATA_DIR / "dataset.csv"
+HISTORY_PATH = REPORTS_DIR / "active_learning.csv"
+FIGURE_PATH = FIGURES_DIR / "active_learning.png"
+
+POOL_SIZE = 5_000
+
+N_INITIAL_LABELED = 100
+
+N_QUERIES_PER_ITERATION = 50
+
+MAX_ITERATIONS = 20
+
+UNLABELED = -1
+
+STRATEGIES = ("uncertainty", "random")
+
+
+def create_label_spreading_pipeline() -> Pipeline:
+    preprocessor = ColumnTransformer(
+        transformers=[
+            (
+                "categorical",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                CATEGORICAL_FEATURES,
+            ),
+            (
+                "numeric",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="median")),
+                        ("scaler", StandardScaler()),
+                    ]
+                ),
+                NUMERIC_FEATURES,
+            ),
+        ],
+    )
+
+    return Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            (
+                "model",
+                LabelSpreading(
+                    kernel="knn",
+                    n_neighbors=10,
+                    alpha=0.2,
+                    max_iter=50,
+                ),
+            ),
+        ]
+    )
+
+
+def select_queries(
+    model: Pipeline,
+    unlabeled_indices: np.ndarray,
+    n_queries: int,
+    strategy: str,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Escolhe quais pedidos vão ser revelados na próxima rodada."""
+    n_queries = min(n_queries, len(unlabeled_indices))
+
+    if strategy == "random":
+        return rng.choice(unlabeled_indices, size=n_queries, replace=False)
+
+    if strategy != "uncertainty":
+        raise ValueError(
+            f"Estratégia bizarra: {strategy}. Usa uma dessas: {STRATEGIES}.")
+
+    distributions = model.named_steps["model"].label_distributions_[
+        unlabeled_indices]
+    entropies = stats.entropy(np.nan_to_num(distributions).T)
+
+    most_uncertain = np.argsort(entropies)[::-1][:n_queries]
+
+    return unlabeled_indices[most_uncertain]
+
+
+def run_active_learning(
+    X_pool: pd.DataFrame,
+    y_pool: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    strategy: str = "uncertainty",
+    n_initial_labeled: int = N_INITIAL_LABELED,
+    n_queries: int = N_QUERIES_PER_ITERATION,
+    max_iterations: int = MAX_ITERATIONS,
+    random_state: int = RANDOM_STATE,
+) -> pd.DataFrame:
+    X_pool = X_pool.reset_index(drop=True)
+    y_pool = y_pool.to_numpy()
+    rng = np.random.default_rng(random_state)
+
+    initial_indices, _ = train_test_split(
+        np.arange(len(y_pool)),
+        train_size=n_initial_labeled,
+        stratify=y_pool,
+        random_state=random_state,
+    )
+
+    labeled = np.zeros(len(y_pool), dtype=bool)
+    labeled[initial_indices] = True
+
+    history = []
+
+    for iteration in range(max_iterations + 1):
+        y_train = np.where(labeled, y_pool, UNLABELED)
+
+        model = create_label_spreading_pipeline()
+        model.fit(X_pool, y_train)
+
+        y_proba = model.predict_proba(X_test)[:, 1]
+        history.append(
+            {
+                "strategy": strategy,
+                "iteration": iteration,
+                "n_labeled": int(labeled.sum()),
+                "n_positive_labeled": int(y_pool[labeled].sum()),
+                "pr_auc": float(average_precision_score(y_test, y_proba)),
+                "roc_auc": float(roc_auc_score(y_test, y_proba)),
+            }
+        )
+
+        logger.info(
+            "{} | rodada {:>2} | rótulos: {:>5} ({} atrasos) | pr_auc: {:.4f} | roc_auc: {:.4f}",
+            strategy,
+            iteration,
+            history[-1]["n_labeled"],
+            history[-1]["n_positive_labeled"],
+            history[-1]["pr_auc"],
+            history[-1]["roc_auc"],
+        )
+
+        unlabeled_indices = np.flatnonzero(~labeled)
+        if iteration == max_iterations or len(unlabeled_indices) == 0:
+            break
+
+        queries = select_queries(
+            model, unlabeled_indices, n_queries, strategy, rng)
+        labeled[queries] = True
+
+    return pd.DataFrame(history)
+
+
+def plot_learning_curves(history: pd.DataFrame, baseline: float, path=FIGURE_PATH) -> None:
+    """Gera o gráfico comparando o quão rápido as estratégias aprendem."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for strategy, group in history.groupby("strategy"):
+        ax.plot(group["n_labeled"], group["pr_auc"],
+                marker="o", label=strategy)
+
+    ax.axhline(baseline, color="gray", linestyle="--", label="acaso")
+    ax.set_xlabel("Pedidos rotulados")
+    ax.set_ylabel("PR-AUC no teste")
+    ax.set_title("Active learning com LabelSpreading")
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+    logger.success("Curvas salvas em {}", path)
+
+
+def main() -> None:
+    """Orquestrador do rolê do active learning."""
+    logger.info("Lendo a base intermediária de {}", DATASET_PATH)
+    dataset = pd.read_csv(DATASET_PATH, usecols=FEATURES + [TARGET])
+
+    X_train, X_test, y_train, y_test = split_data(dataset)
+
+    X_pool, _, y_pool, _ = train_test_split(
+        X_train,
+        y_train,
+        train_size=min(POOL_SIZE, len(X_train)),
+        stratify=y_train,
+        random_state=RANDOM_STATE,
+    )
+    logger.info("Pool: {} pedidos | Teste: {} pedidos",
+                len(X_pool), len(X_test))
+
+    history = pd.concat(
+        [
+            run_active_learning(X_pool, y_pool, X_test,
+                                y_test, strategy=strategy)
+            for strategy in STRATEGIES
+        ],
+        ignore_index=True,
+    )
+
+    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    history.to_csv(HISTORY_PATH, index=False)
+    logger.success("Histórico salvo em {}", HISTORY_PATH)
+
+    plot_learning_curves(history, baseline=float(y_test.mean()))
+
+
+if __name__ == "__main__":
+    main()
+
+# module_olist/modeling/cross_validation.py
+import numpy as np
+import pandas as pd
+from loguru import logger
+
+from sklearn.model_selection import (
+    StratifiedKFold,
+    cross_validate,
+    cross_val_predict,
+)
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+)
+
+from module_Olist.modeling.pipeline import (
+    create_gradient_boosting_pipeline,
+    create_xgboost_pipeline,
+    create_lightgbm_pipeline,
+)
+
+
+def prepare_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Remove colunas que não podem ser usadas no treinamento (IDs, datas e data leakage)
+    e separa a variável-alvo (y) das variáveis preditivas (X).
+    """
+    logger.info(
+        "Preparando dados: removendo IDs e colunas que causam vazamento de dados...")
+
+    # Colunas que causam data leakage ou não são interpretáveis matematicamente
+    columns_to_drop = [
+        "order_id",
+        "customer_id",
+        "order_status",
+        "order_purchase_timestamp",
+        "order_approved_at",
+        "order_delivered_carrier_date",
+        "order_delivered_customer_date",
+        "order_estimated_delivery_date",
+        "is_late"  # A própria variável-alvo
+    ]
+
+    # Removendo customer_city devido à altíssima cardinalidade para um modelo inicial.
+    if "customer_city" in df.columns:
+        columns_to_drop.append("customer_city")
+
+    X = df.drop(columns=[col for col in columns_to_drop if col in df.columns])
+    y = df["is_late"]
+
+    return X, y
+
+
+def summarize_cv(results):
+    """
+    Resume os resultados da validação cruzada.
+
+    Para cada métrica, calcula:
+    - média dos folds;
+    - desvio padrão dos folds.
+    """
+    metrics = [
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "roc_auc",
+        "pr_auc",
+    ]
+
+    summary = []
+
+    for metric in metrics:
+        values = results[f"test_{metric}"]
+
+        summary.append(
+            {
+                "metric": metric,
+                "mean": values.mean(),
+                "std": values.std(),
+            }
+        )
+
+    return pd.DataFrame(summary)
+
+
+def find_best_threshold(y_true, y_proba):
+    """
+    Encontra o threshold que maximiza o F1-score.
+
+    O threshold é testado entre 0.01 e 0.99.
+    """
+    best_threshold = None
+
+    best_f1 = -1
+    best_accuracy = None
+    best_precision = None
+    best_recall = None
+
+    # Testa diferentes thresholds
+    for threshold in np.arange(0.01, 1.00, 0.01,):
+        # Converte probabilidades em classes
+        y_pred = (y_proba >= threshold).astype(int)
+
+        # Calcula as métricas
+        accuracy = accuracy_score(y_true, y_pred,)
+        precision = precision_score(y_true, y_pred, zero_division=0,)
+        recall = recall_score(y_true, y_pred, zero_division=0,)
+        f1 = f1_score(y_true, y_pred, zero_division=0,)
+
+        # Verifica se encontrou um F1 melhor
+        if f1 > best_f1:
+            best_threshold = threshold
+            best_accuracy = accuracy
+            best_precision = precision
+            best_recall = recall
+            best_f1 = f1
+
+    return {
+        "threshold": best_threshold,
+        "accuracy": best_accuracy,
+        "precision": best_precision,
+        "recall": best_recall,
+        "f1": best_f1,
+    }
+
+
+def cross_validate_models(
+    X_train,
+    y_train,
+):
+    """
+    Executa validação cruzada dos modelos.
+
+    Para cada modelo:
+     - Executa Cross Validation;
+     - Calcula métricas dos folds;
+     - Gera probabilidades Out-of-Fold;
+     - Encontra o melhor threshold pelo F1;
+     - Compara os modelos pelo F1 OOF otimizado.
+
+    Retorna:
+    - nome do melhor modelo;
+    - melhor threshold.
+    """
+    # -------------------------------------------------
+    # Pipelines
+    # -------------------------------------------------
+    pipelines = {
+        "Gradient Boosting": create_gradient_boosting_pipeline(),
+        "XGBoost": create_xgboost_pipeline(),
+        "LightGBM": create_lightgbm_pipeline(),
+    }
+
+    # -------------------------------------------------
+    # Estratégia de Cross Validation
+    # -------------------------------------------------
+    kf = StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=42,
+    )
+
+    # -------------------------------------------------
+    # Métricas
+    # -------------------------------------------------
+    scoring = {
+        "accuracy": "accuracy",
+        "precision": "precision",
+        "recall": "recall",
+        "f1": "f1",
+        "roc_auc": "roc_auc",
+        "pr_auc": "average_precision",
+    }
+
+    # Guarda os resultados dos modelos
+    cv_results = {}
+
+    # -------------------------------------------------
+    # Cross Validation
+    # -------------------------------------------------
+    for name, pipeline in pipelines.items():
+
+        logger.info(
+            f"Executando Cross Validation: {name}"
+        )
+
+        # ---------------------------------------------
+        # Métricas dos folds
+        # ---------------------------------------------
+        results = cross_validate(
+            estimator=pipeline,
+            X=X_train,
+            y=y_train,
+            cv=kf,
+            scoring=scoring,
+            return_train_score=True,
+        )
+
+        # Resume média e desvio padrão
+        summary = summarize_cv(
+            results
+        )
+
+        print("\n")
+        print("=" * 60)
+        print(
+            f"CROSS VALIDATION - {name}"
+        )
+        print("=" * 60)
+
+        print(summary)
+
+        # ---------------------------------------------
+        # Probabilidades Out-of-Fold
+        # ---------------------------------------------
+        logger.info(f"Calculando probabilidades Out-of-Fold: {name}")
+
+        y_proba_oof = cross_val_predict(
+            estimator=pipeline,
+            X=X_train,
+            y=y_train,
+            cv=kf,
+            method="predict_proba",
+        )[:, 1]
+
+        # ---------------------------------------------
+        # Melhor threshold
+        # ---------------------------------------------
+        threshold_results = (
+            find_best_threshold(
+                y_true=y_train,
+                y_proba=y_proba_oof,
+            )
+        )
+
+        # ---------------------------------------------
+        # Guarda os resultados do modelo
+        # ---------------------------------------------
+        cv_results[name] = {
+            "results": results,
+            "summary": summary,
+            "threshold": (
+                threshold_results[
+                    "threshold"
+                ]
+            ),
+            "accuracy": (
+                threshold_results[
+                    "accuracy"
+                ]
+            ),
+            "precision": (
+                threshold_results[
+                    "precision"
+                ]
+            ),
+            "recall": (
+                threshold_results[
+                    "recall"
+                ]
+            ),
+            "f1_oof": (
+                threshold_results[
+                    "f1"
+                ]
+            ),
+            "pr_auc": (
+                results[
+                    "test_pr_auc"
+                ].mean()
+            ),
+        }
+
+        # ---------------------------------------------
+        # Resultado com threshold otimizado
+        # ---------------------------------------------
+        logger.success(f"THRESHOLD OTIMIZADO - {name}")
+        logger.info(f"Threshold: {threshold_results['threshold']:.2f}")
+        logger.info(f"Accuracy: {threshold_results['accuracy']:.3f}")
+        logger.info(f"Precision: {threshold_results['precision']:.3f}")
+        logger.info(f"Recall: {threshold_results['recall']:.3f}")
+        logger.info(f"F1 OOF: {threshold_results['f1']:.3f}")
+
+    # -------------------------------------------------
+    # Escolha do melhor modelo
+    # -------------------------------------------------
+    best_model_name = max(
+        cv_results,
+        key=lambda name: (
+            cv_results[name]["f1_oof"]
+        ),
+    )
+
+    # Recupera os resultados do vencedor
+    best_results = cv_results[
+        best_model_name
+    ]
+
+    best_threshold = best_results[
+        "threshold"
+    ]
+    best_accuracy = best_results[
+        "accuracy"
+    ]
+    best_precision = best_results[
+        "precision"
+    ]
+    best_recall = best_results[
+        "recall"
+    ]
+    best_f1 = best_results[
+        "f1_oof"
+    ]
+    best_pr_auc = best_results[
+        "pr_auc"
+    ]
+
+    # -------------------------------------------------
+    # Resultado final da seleção
+    # -------------------------------------------------
+    logger.success(
+        f"Melhor modelo: "
+        f"{best_model_name}"
+    )
+
+    logger.info(f"F1 OOF otimizado: {best_f1:.3f}")
+    logger.success("MODELO SELECIONADO")
+    logger.info(f"Modelo: {best_model_name}")
+    logger.info(f"Threshold: {best_threshold:.2f}")
+    logger.info(f"Accuracy OOF: {best_accuracy:.3f}")
+    logger.info(f"Precision OOF: {best_precision:.3f}")
+    logger.info(f"Recall OOF: {best_recall:.3f}")
+    logger.info(f"F1 OOF: {best_f1:.3f}")
+    logger.info(f"PR-AUC médio CV: {best_pr_auc:.3f}")
+    logger.success("Cross Validation concluído.")
+
+    # -------------------------------------------------
+    # Retorno
+    # -------------------------------------------------
+    return (
+        best_model_name,
+        best_threshold,
+    )
+
+# module_olist/modeling/evaluate.py
+import numpy as np
+from loguru import logger
+from sklearn.metrics import (precision_score,
+                             recall_score,
+                             f1_score,
+                             roc_auc_score,
+                             )
+
+def evaluate_models(
+    models, X_test, y_test
+):
+  for name, model in models.items():
+      y_proba = model.predict_proba(X_test)
+
+      best_threshold = None
+      best_f1 = -1
+      best_precision = None
+      best_recall = None
+
+      for threshold in np.range(0.05, 0.50, 0.01):
+         y_pred = (y_proba >= threshold).astype(int)
+
+         f1 = f1_score(y_test, y_pred)
+         precision = precision_score(y_test, y_pred)
+         recall = recall_score(y_test, y_pred)
+
+         if f1 > best_f1:
+             best_f1 = f1
+             best_threshold = threshold
+             best_precision = precision
+             best_recall = recall
+            
+      roc_auc = roc_auc_score(y_test, y_proba,)
+
+      logger.info(f"Modelo: {name}")
+      logger.info(f"Melhor threshold: {best_threshold:.2f}")
+      logger.info(f"Precision: {best_precision:.3f}")
+      logger.info(f"Recall: {best_recall:.3f}")
+      logger.info(f"F1: {best_f1:.4f}")
+      logger.info(f"ROC-AUC: {roc_auc:.3f}")
+
+# module_olist/modeling/interpret.py
+import pandas as pd
+import shap
+from scipy import sparse
+
+
+def prepare_data_for_shap(pipeline, X):
+    """
+    Aplica o mesmo pré-processamento
+    utilizado durante o treinamento.
+    """
+    # Recupera o pré-processador
+    preprocessor = pipeline.named_steps["preprocessor"]
+
+    # Aplica as transformações
+    X_transformed = preprocessor.transform(X)
+
+    # Se for matriz esparsa, converte para matriz normal
+    if sparse.issparse(X_transformed):
+        X_transformed = (X_transformed.toarray())
+
+    # Recupera os nomes das features
+    feature_names = (preprocessor.get_feature_names_out())
+
+    # Converte para DataFrame
+    X_transformed = pd.DataFrame(
+        X_transformed,
+        columns=feature_names,
+        index=X.index,
+    )
+
+    return X_transformed
+
+
+def create_explainer(pipeline):
+    """
+    Cria o explicador SHAP para o modelo treinado.
+    """
+    model = pipeline.named_steps["model"]
+
+    # Crie um explicador especializado em entender as previsões deste modelo baseado em árvores.
+    explainer = shap.TreeExplainer(model)
+
+    return explainer
+
+
+def calculate_shap_values(explainer, X_transformed):
+    """
+    Calcula as contribuições SHAP das observações.
+    """
+    # Explica o que esse modelo faz para as observações fornecidas.
+    shap_values = explainer(X_transformed)
+
+    return shap_values
+
+# module_olist/modeling/pipeline.py
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import GradientBoostingClassifier
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+
+"""
+# Comparação
+
+| Aspecto | **GradientBoosting** (sklearn) | **XGBoost** | **LightGBM** |
+| --- | --- | --- | --- |
+| **Crescimento da árvore** | Level-wise | Level-wise | **Leaf-wise** (mais rápido) |
+| **Velocidade** | Lento | Rápido | **Mais rápido** |
+| **Uso de memória** | Alto | Médio | **Baixo** |
+| **Datasets grandes** | Não escala bem | Escala bem | **Escala melhor** |
+| **Regularização** | Básica (shrinkage) | L1 + L2 + shrinkage | L1 + L2 + shrinkage |
+| **Valores faltantes** | Precisa tratar antes | Trata nativamente | Trata nativamente |
+| **Features categóricas** | Precisa encoding | Precisa encoding | **Suporte nativo** |
+| **GPU** | Não | Sim | Sim |
+| **Overfitting em dados pequenos** | Moderado | Moderado | **Maior risco** (leaf-wise) |
+| **Quando usar** | Datasets pequenos, baseline | Competições, produção geral | Datasets grandes, alta velocidade |
+
+**Resumo prático:** LightGBM é geralmente a primeira escolha para dados grandes. XGBoost é o mais equilibrado e bem documentado. GradientBoosting do sklearn serve como baseline simples.
+"""
+
+NUMERIC_FEATURES = [
+  "promised_days",
+  "item_count",
+  "seller_count",
+  "total_price",
+  "total_freight"
+]
+
+CATEGORICAL_FEATURES = [
+  "purchase_month",
+  "purchase_weekday",
+  "purchase_hour",
+  "customer_state"
+]
+
+def create_preprocessor() -> ColumnTransformer:
+  return ColumnTransformer(
+    transformers=[
+      # Nas colunas numéricas
+      ("numeric", "passthrough", NUMERIC_FEATURES),
+      # Nas colunas categoricas
+      ("categorical", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_FEATURES),
+    ]
+  )
+
+def create_gradient_boosting_pipeline() -> Pipeline:
+  """
+  Cria o pipeline do pré-processamento e 
+  treinamento do modelo.
+  """
+  preprocessor = create_preprocessor()
+
+  model = GradientBoostingClassifier(
+    n_estimators=100, # número de árvores na floresta.
+    learning_rate=0.1, # Taxa de aprendizado
+    max_depth=3,
+    random_state=42
+  )
+
+  return Pipeline(
+    steps=[
+      ("preprocessor", preprocessor),
+      ("model", model)
+    ]
+  )
+
+def create_xgboost_pipeline() -> Pipeline:
+  preprocessor = create_preprocessor()
+
+  model = XGBClassifier(
+    n_estimators=100,
+    learning_rate=0.1,
+    max_depth=3,
+    random_state=42
+  )
+
+  return Pipeline(
+    steps=[
+      ("preprocessor", preprocessor),
+      ("model", model)
+    ]
+  )
+
+def create_lightgbm_pipeline() -> Pipeline:
+  preprocessor = create_preprocessor()
+
+  model = LGBMClassifier(
+    n_estimators=100,
+    learning_rate=0.1,
+    max_depth=3,
+    random_state=42
+  )
+
+  return Pipeline(
+    steps=[
+      ("preprocessor", preprocessor),
+      ("model", model)
+    ]
+  )
+
+# module_olist/modeling/predict.py
+# module_Olist/modeling/predict.py
+import joblib
+import pandas as pd
+from loguru import logger
+
+
+def load_model(model_path):
+    """
+    Carrega o artefato do modelo treinado, que já contém
+    o pipeline, o threshold ideal e o nome do modelo.
+    """
+    logger.info(f"Carregando artefato do modelo em: {model_path}")
+
+    # Carrega o dicionário único
+    artifact = joblib.load(model_path)
+
+    model = artifact["pipeline"]
+    model_name = artifact["model_name"]
+    threshold = float(artifact["optimal_threshold"])
+
+    logger.info(f"Modelo carregado: {model_name}")
+    logger.info(f"Threshold carregado: {threshold:.2f}")
+
+    return (model, model_name, threshold)
+
+
+def predict(model, X, threshold):
+    """
+    Realiza inferência utilizando o threshold definido na validação.
+    """
+    # Pega as probabilidades apenas da classe 1 (atraso)
+    y_proba = model.predict_proba(X)[:, 1]
+
+    # Aplica o threshold otimizado
+    y_pred = (y_proba >= threshold).astype(int)
+
+    predictions = pd.DataFrame(
+        {
+            "prob_is_late": y_proba,
+            "prediction": y_pred,
+        },
+        index=X.index,
+    )
+
+    return predictions
+
+# module_olist/modeling/split.py
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+FEATURES = [
+    "purchase_hour",
+    "purchase_weekday",
+    "purchase_month",
+    "promised_days",
+    "item_count",
+    "seller_count",
+    "total_price",
+    "total_freight",
+    "customer_state"
+]
+
+TARGET = "is_late"
+
+def split_data(data: pd.DataFrame, test_size=0.2, random_state=42):
+    """
+    Divide o dataset em conjunto de treino e teste
+    """
+    X = data[FEATURES]
+    y = data[TARGET]
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+
+    return X_train, X_test, y_train, y_test
+
+# module_olist/modeling/train.py
+# module_Olist/modeling/train.py
+import joblib
+import pandas as pd
+from loguru import logger
+
+from module_Olist.config import MODELS_DIR
+from module_Olist.cross_validation import prepare_data
+from module_Olist.cross_validation import cross_validate_models
+
+# Importa os pipelines da sua pasta modeling
+from module_Olist.modeling.pipeline import (
+    create_gradient_boosting_pipeline,
+    create_xgboost_pipeline,
+    create_lightgbm_pipeline,
+)
+
+def get_pipeline_by_name(name: str):
+    """Retorna a instância do pipeline com base no nome do modelo."""
+    pipelines = {
+        "Gradient Boosting": create_gradient_boosting_pipeline(),
+        "XGBoost": create_xgboost_pipeline(),
+        "LightGBM": create_lightgbm_pipeline(),
+    }
+    return pipelines[name]
+
+def train_and_save_best_model(df: pd.DataFrame) -> None:
+    """
+    Prepara os dados, executa a validação cruzada para encontrar o melhor
+    modelo e limiar (threshold), treina o vencedor na base completa e salva.
+    """
+    logger.info("Preparando os dados para seleção e treinamento...")
+    X, y = prepare_data(df)
+
+    logger.info("Iniciando a busca pelo melhor modelo (Cross-Validation)...")
+    # Usa a função do cross_validation_2.py para encontrar o vencedor
+    best_model_name, best_threshold = cross_validate_models(X, y)
+    
+    logger.info(f"Treinando o modelo vencedor ({best_model_name}) em todos os dados (Full Train)...")
+    best_pipeline = get_pipeline_by_name(best_model_name)
+    best_pipeline.fit(X, y)
+
+    # Empacota o modelo, o threshold ideal e o nome das colunas
+    model_artifact = {
+        "model_name": best_model_name,
+        "pipeline": best_pipeline,
+        "optimal_threshold": best_threshold,
+        "features": list(X.columns)
+    }
+
+    # Garante que a pasta models existe e salva o arquivo
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    model_path = MODELS_DIR / "best_model.joblib"
+    
+    logger.info(f"Salvando o artefato do modelo em {model_path}...")
+    joblib.dump(model_artifact, model_path)
+    
+    logger.success("Treinamento finalizado e modelo salvo com sucesso!")
+
+# module_olist/plots.py
+from pathlib import Path
+
+from loguru import logger
+from tqdm import tqdm
+import typer
+
+from module_Olist.config import FIGURES_DIR, PROCESSED_DATA_DIR
+
+app = typer.Typer()
+
+
+@app.command()
+def main(
+    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
+    input_path: Path = PROCESSED_DATA_DIR / "dataset.csv",
+    output_path: Path = FIGURES_DIR / "plot.png",
+    # -----------------------------------------
+):
+    # ---- REPLACE THIS WITH YOUR OWN CODE ----
+    logger.info("Generating plot from data...")
+    for i in tqdm(range(10), total=10):
+        if i == 5:
+            logger.info("Something happened for iteration 5.")
+    logger.success("Plot generation complete.")
+    # -----------------------------------------
+
+
+if __name__ == "__main__":
+    app()
