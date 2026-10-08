@@ -1,7 +1,7 @@
 import pandas as pd
 from loguru import logger
 
-from module_Olist.dataset import aggregate_data, create_target
+from module_olist.dataset import aggregate_data, create_target
 
 
 def create_features(data: pd.DataFrame) -> pd.DataFrame:
@@ -20,8 +20,10 @@ def create_features(data: pd.DataFrame) -> pd.DataFrame:
     # considerando como início o momento da aprovação do pagamento.
     data["promised_days"] = (
         data["order_estimated_delivery_date"]  # Data prometida para a entrega.
-        - data["order_approved_at"]            # Data de aprovação do pagamento.
-    ).dt.total_seconds().div(86_400)          # Converte segundos para dias => 24 * 60 * 60 = 86.400 segundos
+        # Data de aprovação do pagamento.
+        - data["order_approved_at"]
+        # Converte segundos para dias => 24 * 60 * 60 = 86.400 segundos
+    ).dt.total_seconds().div(86_400)
 
     # Extrai o número do mês em que a compra foi realizada.
     # Exemplo: janeiro = 1, fevereiro = 2, ..., dezembro = 12.
@@ -99,7 +101,8 @@ def create_dataset(
         items_agg,
         on="order_id",          # Coluna usada para relacionar as tabelas.
         how="left",             # Mantém todos os pedidos de orders.
-        validate="one_to_one",  # Verifica se order_id é único nas duas tabelas.
+        # Verifica se order_id é único nas duas tabelas.
+        validate="one_to_one",
     )
 
     # Adiciona a localização do cliente.
@@ -107,10 +110,12 @@ def create_dataset(
         customers[["customer_id", "customer_city", "customer_state"]],
         on="customer_id",         # Relaciona cada pedido ao seu cliente.
         how="left",               # Mantém todos os pedidos da base anterior.
-        validate="many_to_one",   # Vários pedidos podem apontar para um cliente.
+        # Vários pedidos podem apontar para um cliente.
+        validate="many_to_one",
     )
 
     assert dataset["order_id"].is_unique, "A base final deve manter uma linha por pedido."
-    assert len(dataset) == len(orders), "A integração alterou o total de pedidos."
+    assert len(dataset) == len(
+        orders), "A integração alterou o total de pedidos."
 
     return dataset

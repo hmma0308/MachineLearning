@@ -14,7 +14,7 @@ from sklearn.metrics import (
     f1_score,
 )
 
-from module_Olist.modeling.pipeline import (
+from module_olist.modeling.pipeline import (
     create_gradient_boosting_pipeline,
     create_xgboost_pipeline,
     create_lightgbm_pipeline,
