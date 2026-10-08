@@ -4,7 +4,7 @@ from loguru import logger
 from tqdm import tqdm
 import typer
 
-from module_Olist.config import FIGURES_DIR, PROCESSED_DATA_DIR
+from module_olist.config import FIGURES_DIR, PROCESSED_DATA_DIR
 
 app = typer.Typer()
 

@@ -1,12 +1,12 @@
 import pandas as pd
 from loguru import logger
 
-from module_Olist.config import (
+from module_olist.config import (
     INTERIM_DATA_DIR,
     MODELS_DIR,
 )
 
-from module_Olist.modeling.predict import (
+from module_olist.modeling.predict import (
     load_model,
     predict,
 )

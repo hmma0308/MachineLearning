@@ -1,1 +1,1 @@
-from module_Olist import config  # noqa: F401
+from module_olist import config  # noqa: F401
