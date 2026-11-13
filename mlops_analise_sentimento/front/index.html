@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLOps - Análise de Sentimento</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --pos: #10b981;
+            --neg: #ef4444;
+            --border: #334155;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        body { background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .container { background: var(--card); border: 1px solid var(--border); border-radius: 12px; width: 100%; max-width: 540px; padding: 28px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        h1 { font-size: 1.25rem; font-weight: 600; }
+        .status { font-size: 0.75rem; padding: 4px 10px; border-radius: 999px; background: #064e3b; color: #34d399; font-weight: 500; }
+        .status.offline { background: #7f1d1d; color: #f87171; }
+        label { display: block; font-size: 0.875rem; color: var(--muted); margin-bottom: 8px; }
+        textarea { width: 100%; height: 110px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 12px; font-size: 0.95rem; resize: vertical; outline: none; transition: border 0.2s; }
+        textarea:focus { border-color: var(--accent); }
+        .controls { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
+        .char-count { font-size: 0.75rem; color: var(--muted); }
+        button { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        button:hover { background: var(--accent-hover); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .result { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); display: none; }
+        .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+        .metric-box { background: var(--bg); padding: 14px; border-radius: 8px; border: 1px solid var(--border); }
+        .metric-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+        .metric-value { font-size: 1.35rem; font-weight: 700; margin-top: 4px; text-transform: capitalize; }
+        .positivo { color: var(--pos); }
+        .negativo { color: var(--neg); }
+        .bar-bg { width: 100%; height: 8px; background: var(--bg); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); }
+        .bar-fill { height: 100%; width: 0%; transition: width 0.4s ease; }
+        .meta { margin-top: 12px; font-size: 0.75rem; color: var(--muted); text-align: right; }
+        .error { margin-top: 16px; color: var(--neg); font-size: 0.875rem; display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Análise de Sentimento</h1>
+            <span id="api-status" class="status offline">API Offline</span>
+        </div>
+
+        <label for="texto">Avaliação do cliente:</label>
+        <textarea id="texto" maxlength="1000" placeholder="Digite um comentário (ex: Produto excelente, chegou antes do prazo!)"></textarea>
+        
+        <div class="controls">
+            <span id="char-count" class="char-count">0 / 1000</span>
+            <button id="btn-submit" onclick="analisar()">Classificar</button>
+        </div>
+
+        <div id="error-msg" class="error"></div>
+
+        <div id="result-box" class="result">
+            <div class="metrics">
+                <div class="metric-box">
+                    <div class="metric-label">Sentimento</div>
+                    <div id="res-sentimento" class="metric-value">-</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">Confiança</div>
+                    <div id="res-confianca" class="metric-value">-</div>
+                </div>
+            </div>
+            <div class="bar-bg">
+                <div id="res-bar" class="bar-fill"></div>
+            </div>
+            <div id="res-versao" class="meta"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "http://localhost:8000";
+        const textarea = document.getElementById("texto");
+        const charCount = document.getElementById("char-count");
+        const statusBadge = document.getElementById("api-status");
+
+        textarea.addEventListener("input", () => {
+            charCount.textContent = `${textarea.value.length} / 1000`;
+        });
+
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${API_URL}/health`);
+                if (res.ok) {
+                    statusBadge.textContent = "API Online";
+                    statusBadge.classList.remove("offline");
+                }
+            } catch {
+                statusBadge.textContent = "API Offline";
+                statusBadge.classList.add("offline");
+            }
+        }
+
+        async function analisar() {
+            const texto = textarea.value.trim();
+            const errorMsg = document.getElementById("error-msg");
+            const resultBox = document.getElementById("result-box");
+            const btn = document.getElementById("btn-submit");
+
+            errorMsg.style.display = "none";
+
+            if (texto.length < 3) {
+                errorMsg.textContent = "Digite pelo menos 3 caracteres.";
+                errorMsg.style.display = "block";
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = "Processando...";
+
+            try {
+                const response = await fetch(`${API_URL}/predict`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ texto })
+                });
+
+                if (!response.ok) throw new Error("Falha ao processar requisição.");
+
+                const data = await response.json();
+                const pct = (data.confianca * 100).toFixed(1) + "%";
+                const isPos = data.sentimento.toLowerCase() === "positivo";
+
+                const sentEl = document.getElementById("res-sentimento");
+                sentEl.textContent = data.sentimento;
+                sentEl.className = `metric-value ${isPos ? "positivo" : "negativo"}`;
+
+                document.getElementById("res-confianca").textContent = pct;
+
+                const barEl = document.getElementById("res-bar");
+                barEl.style.width = pct;
+                barEl.style.backgroundColor = isPos ? "var(--pos)" : "var(--neg)";
+
+                document.getElementById("res-versao").textContent = `Versão do modelo: ${data.versao_modelo}`;
+                resultBox.style.display = "block";
+            } catch (err) {
+                errorMsg.textContent = "Erro ao conectar com a API em localhost:8000.";
+                errorMsg.style.display = "block";
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "Classificar";
+            }
+        }
+
+        checkHealth();
+    </script>
+</body>
+</html>
